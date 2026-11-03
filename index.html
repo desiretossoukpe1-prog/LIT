@@ -499,7 +499,6 @@ function viewReview(){
   if(S.reviewMode==="preview"&&!busy)body='<div class="prose">'+(pr.review?mdToHtml(pr.review):"<p>Nothing drafted yet.</p>")+'</div>';
   else body='<textarea class="ms" id="reviewBody" data-bind="project||review" placeholder="The draft appears here. You can also type or paste your own text and use the tools below.">'+esc(pr.review)+'</textarea>';
   var refs=refList();
-  var map0=rows.length?'<div class="tablewrap" style="margin-top:8px"><table class="lmap"><thead><tr><th>Source</th><th>Methodology</th><th>Sample or context</th><th>Key findings</th></tr></thead><tbody>'+rows.map(function(r){return "<tr>"+r.map(function(c){return "<td>"+esc(c)+"</td>"}).join("")+"</tr>"}).join("")+'</tbody></table></div>':"";
   return '<h1 class="view-title">Review</h1><p class="lede">The draft follows the course template and is written only from the notes in your library. Tables and references are built from the same records. Aim for about 15 to 25% of your whole paper.</p>'+noClaude()+
   (n&&unchecked?'<div class="notice">'+unchecked+' of '+n+' papers in the review are not marked as checked yet. Check them in the library first if you can.</div>':"")+
   (!n?'<div class="notice">Add papers to the library first. The review has nothing to draw on yet.</div>':"")+
@@ -518,6 +517,7 @@ function viewReview(){
   '<div class="toolbar"><div class="seg"><button data-act="rmode" data-m="edit" aria-pressed="'+(S.reviewMode==="edit")+'">Edit</button><button data-act="rmode" data-m="preview" aria-pressed="'+(S.reviewMode==="preview")+'">Preview</button></div><span class="sp"></span>'+
    '<button class="btn ghost sm" data-act="copy">Copy all</button><button class="btn ghost sm" data-act="dl-md">Download .md</button><button class="btn sm" data-act="dl-html">Download for Word (.html)</button></div>'+
   body+
+  authorshipView()+
   tablesView()+
   '<div class="card"><h3>References</h3><p class="sub">Built from field "Full reference (APA 7)", sorted A to Z. Verify each against the original.</p>'+(refs.length?'<ul class="refs">'+refs.map(function(r){return "<li>"+esc(r)+"</li>"}).join("")+'</ul>':'<p class="sub">No references yet.</p>')+'</div>';
 }
@@ -563,7 +563,7 @@ async function genReview(){
    structureText(pr.structure,pr.quant!==false)+"\n\nReturn markdown only, with no preamble.\n\nPAPER NOTES (JSON):\n"+JSON.stringify(papers);
   try{
     var r=await cap.sample(prompt,{signal:ctl.signal,modelTier:"default",cache:false,onText:function(o){pr.review=o.text;var ta=$("#reviewBody");if(ta){ta.value=o.text;grow(ta)}}});
-    pr.review=r.text;
+    pr.review=r.text;pr.aiDraft=r.text;
     S.busy.review=false;saveProject();render();
     if(!r.truncated&&pr.structure==="template")await genTables();
     if(r.truncated){var el=$("#reverr");if(el)el.innerHTML='<div class="notice">The draft was cut short. Pick a shorter length or redraft one section at a time.</div>'}
@@ -616,6 +616,57 @@ async function genTables(){
     pr.tables={t1:ok(d&&d.t1,["group","item","sources"]),t2:pr.quant===false?[]:ok(d&&d.t2,["hyps","sources"])};
     saveProject();S.busy.tables=false;render();
   }catch(e){S.busy.tables=false;render();var el=$("#tblerr");if(el)el.innerHTML='<div class="notice err">'+esc(errCopy(e))+'</div>'}
+  ctl=null;
+}
+
+/* ---------- authorship check ---------- */
+function tokens(t){
+  t=String(t||"").replace(/\([^()]*\d{4}[^()]*\)/g," ").replace(/[#*_>`|-]+/g," ").toLowerCase();
+  return t.match(/[a-z0-9']+/g)||[];
+}
+function overlapStats(finalT,draftT){
+  var f=tokens(finalT),d=tokens(draftT),K=5;
+  if(f.length<K||d.length<K)return null;
+  var set={},i,j,q;
+  for(i=0;i+K<=d.length;i++)set[d.slice(i,i+K).join(" ")]=1;
+  var cov=new Array(f.length);for(i=0;i<f.length;i++)cov[i]=false;
+  for(j=0;j+K<=f.length;j++){if(set[f.slice(j,j+K).join(" ")]){for(q=j;q<j+K;q++)cov[q]=true}}
+  var c=cov.filter(Boolean).length;
+  return {pct:Math.round(100*c/f.length),words:f.length,covered:c};
+}
+function overlapNote(pct){
+  return pct<15?"Mostly your own wording.":pct<40?"Partly rewritten. Some stretches still follow the draft.":"Much of this is still the draft's wording. Keep rewriting in your own words.";
+}
+function authorshipView(){
+  var pr=S.project,busy=S.busy.rater,o=S.overlap,r=pr.rater,hasText=!!(pr.review&&pr.review.trim());
+  var ov="";
+  if(o&&o.none)ov='<div class="notice">There is no AI draft to compare with. Draft the review once with the button above, or paste the original AI draft below.</div>';
+  else if(o)ov='<p><strong class="mono">'+o.pct+'%</strong> of your '+o.words+' words sit inside 5-word runs copied from the AI draft. '+esc(overlapNote(o.pct))+'</p>';
+  var rt="";
+  if(r){
+    rt='<p><strong class="mono">'+esc(r.low)+'–'+esc(r.high)+'%</strong> rough estimate of text that still reads as generic or templated.</p><p class="sub">'+esc(r.summary||"")+'</p>'+
+     ((r.passages&&r.passages.length)?'<ul class="refs" style="font-family:var(--f-body);font-size:14px">'+r.passages.map(function(x){return '<li><em>“'+esc(x.quote)+'”</em><br><span style="color:var(--muted)">'+esc(x.why)+' '+esc(x.tip)+'</span></li>'}).join("")+'</ul>':"");
+  }
+  return '<div class="card" style="margin-top:18px"><h3>Authorship check</h3>'+
+   '<p class="sub">Use this after you rewrite the draft in your own voice. It is not an AI-detector score. Detectors are unreliable and cannot prove who wrote a text, so do not treat any number here as proof either way. Follow your course’s rules on disclosing AI help.</p>'+
+   '<details class="paste" style="margin-bottom:12px"><summary>Original AI draft to compare with'+(pr.aiDraft?" (saved)":"")+'</summary><textarea data-bind="project||aiDraft" placeholder="Saved automatically when the tool drafts the review. You can also paste the original AI text here.">'+esc(pr.aiDraft||"")+'</textarea></details>'+
+   '<div class="row"><button class="btn sm" data-act="check-own"'+(hasText?"":" disabled")+'>1. Measure overlap with the AI draft</button>'+
+   '<button class="btn sm ghost" data-act="gen-rater"'+((!cap.sample||!hasText||busy)?" disabled":"")+'>'+(busy?"Reading...":"2. Ask Claude for a voice review")+'</button>'+(busy?'<button class="btn ghost sm" data-act="stop">Stop</button>':"")+'</div>'+
+   '<div id="raterr"></div><div style="margin-top:12px">'+ov+rt+'</div></div>';
+}
+async function genRater(){
+  var pr=S.project;
+  if(!cap.sample||!pr.review||!pr.review.trim())return;
+  S.busy.rater=true;render();ctl=new AbortController();
+  var prompt="You are giving a student feedback on how much of their own voice a piece of academic writing has. This is a style judgment, not detection of who wrote it. Do not claim to know the author. Do not suggest ways to avoid AI detectors.\n\n"+
+   "Estimate the share of the text (as a percent range) that reads as generic, formulaic or stock-phrased, as opposed to specific, reasoned and carrying a particular writer's choices. Then pick up to 6 passages that read most generic and say how the student could make each one reflect their own thinking (their own reasoning, interpretation, or specific evidence from the studies).\n\n"+
+   "Return one JSON object: {\"low\":number,\"high\":number,\"summary\":\"2 sentences\",\"passages\":[{\"quote\":\"exact text, under 20 words\",\"why\":\"one short sentence\",\"tip\":\"one short sentence\"}]}. low and high are whole numbers from 0 to 100 with low<=high. JSON only.\n\nTEXT:\n"+pr.review.slice(0,20000);
+  try{
+    var d=await cap.sample.json(prompt,{signal:ctl.signal,modelTier:"default",cache:false});
+    var lo=Math.max(0,Math.min(100,Math.round(+d.low)||0)),hi=Math.max(lo,Math.min(100,Math.round(+d.high)||lo));
+    pr.rater={low:lo,high:hi,summary:flat(d.summary),passages:(Array.isArray(d.passages)?d.passages:[]).slice(0,6).map(function(x){return {quote:flat(x&&x.quote),why:flat(x&&x.why),tip:flat(x&&x.tip)}})};
+    saveProject();S.busy.rater=false;render();
+  }catch(e){S.busy.rater=false;render();var el=$("#raterr");if(el&&!(e&&e.code==="cancelled"))el.innerHTML='<div class="notice err">'+esc(errCopy(e))+'</div>'}
   ctl=null;
 }
 
@@ -682,6 +733,8 @@ document.addEventListener("click",function(e){
   else if(a==="gen-tables"){genTables()}
   else if(a==="restore"){var cur=S.project.review;S.project.review=S.project.prevReview;S.project.prevReview=cur;saveProject();render()}
   else if(a==="rmode"){S.reviewMode=t.dataset.m;render()}
+  else if(a==="check-own"){S.overlap=overlapStats(S.project.review,S.project.aiDraft)||{none:true};render()}
+  else if(a==="gen-rater"){genRater()}
   else if(a==="copy"){copyText(toMd())}
   else if(a==="dl-md"){save("literature-review.md",toMd())}
   else if(a==="dl-html"){save("literature-review.html",toHtml())}
